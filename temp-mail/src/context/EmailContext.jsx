@@ -108,7 +108,7 @@ export function EmailProvider({ children }) {
   // Polling for new messages
   useEffect(() => {
     if (!emailAddress) return
-    pollingRef.current = setInterval(fetchMessages, 5000)
+    pollingRef.current = setInterval(fetchMessages, 3000)
     return () => clearInterval(pollingRef.current)
   }, [emailAddress, fetchMessages])
 

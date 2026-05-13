@@ -82,8 +82,8 @@ export default function EmailGenerator({ onToast }) {
             animate={{ opacity: 1 }}
             transition={{ delay: 0.4 }}
           >
-            Protect your privacy with a disposable email address.
-            No registration needed.
+            Real temporary email — receive OTPs, verifications, and more.
+            Powered by Mail.tm. No registration needed.
           </motion.p>
         </div>
 
@@ -172,18 +172,18 @@ export default function EmailGenerator({ onToast }) {
               {/* Action Buttons */}
               <div className="flex flex-wrap gap-3">
                 <ActionButton
-                  onClick={handleSendTest}
-                  icon={<Send className="w-4 h-4" />}
-                  text={sending ? 'Sending...' : 'Send Test Email'}
-                  variant="primary"
-                  disabled={sending}
-                />
-                <ActionButton
                   onClick={handleGenerate}
                   icon={<RefreshCw className="w-4 h-4" />}
                   text="New Address"
-                  variant="secondary"
+                  variant="primary"
                   disabled={loading}
+                />
+                <ActionButton
+                  onClick={handleSendTest}
+                  icon={<Send className="w-4 h-4" />}
+                  text={sending ? 'Sending...' : 'Send Test'}
+                  variant="secondary"
+                  disabled={sending}
                 />
                 <ActionButton
                   onClick={handleDelete}
