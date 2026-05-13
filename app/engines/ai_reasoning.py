@@ -61,10 +61,10 @@ class AIReasoningEngine:
             elif settings.ai_provider == "gemini" and settings.gemini_api_key:
                 return await self._call_gemini(prompt)
             else:
-                return self._fallback_reasoning(setup)
+                return self._fallback_reasoning(setup, market_data)
         except Exception:
             logger.exception("AI reasoning failed, using fallback")
-            return self._fallback_reasoning(setup)
+            return self._fallback_reasoning(setup, market_data)
 
     def _build_prompt(self, setup: SetupCandidate, market_data: GlobalMarketData | None) -> str:
         parts = [
@@ -191,19 +191,77 @@ class AIReasoningEngine:
             )
 
     @staticmethod
-    def _fallback_reasoning(setup: SetupCandidate) -> AIReasoning:
-        confluence_text = ", ".join(setup.confluence_factors[:3])
-        risk_text = (
-            ", ".join(setup.risk_factors[:2]) if setup.risk_factors else "Standard market risk"
-        )
+    def _fallback_reasoning(
+        setup: SetupCandidate,
+        market_data: GlobalMarketData | None = None,
+    ) -> AIReasoning:
+        setup_name = setup.setup_type.value.replace("_", " ").title()
+        direction = setup.direction.value.upper()
+
+        # Build unique, coin-specific explanation using actual numbers
+        lines = [
+            f"{setup.symbol} shows a {setup_name} pattern on the {setup.timeframe} chart.",
+            f"Entry zone: {setup.entry_low:.4f}–{setup.entry_high:.4f} "
+            f"with stop at {setup.stop_loss:.4f} and target at {setup.tp1:.4f} "
+            f"(R:R {setup.rr_ratio}).",
+        ]
+
+        # Add the actual confluence reasoning
+        if setup.confluence_factors:
+            lines.append(
+                f"This {direction} is supported by: {'; '.join(setup.confluence_factors)}."
+            )
+
+        explanation = " ".join(lines)
+
+        # Risk summary with specifics
+        risk_parts = []
+        if setup.risk_factors:
+            risk_parts.extend(setup.risk_factors)
+        risk_parts.append(f"Invalidation: {setup.invalidation}")
+        risk_text = ". ".join(risk_parts)
+
+        # Market context from actual data
+        if market_data:
+            ctx_parts = []
+            if market_data.btc_price > 0:
+                ctx_parts.append(f"BTC at ${market_data.btc_price:,.0f}")
+            if market_data.market_trend:
+                ctx_parts.append(f"market trend is {market_data.market_trend}")
+            if market_data.fear_greed_index is not None:
+                fg = market_data.fear_greed_index
+                label = (
+                    "extreme fear"
+                    if fg < 25
+                    else "fear"
+                    if fg < 45
+                    else "neutral"
+                    if fg < 55
+                    else "greed"
+                    if fg < 75
+                    else "extreme greed"
+                )
+                ctx_parts.append(f"Fear & Greed at {fg} ({label})")
+            if market_data.breadth_bullish_pct > 0:
+                ctx_parts.append(f"{market_data.breadth_bullish_pct:.0f}% of coins above 20 EMA")
+            market_context = (
+                ". ".join(ctx_parts) + "." if ctx_parts else "No market context available."
+            )
+        else:
+            market_context = "No market context available."
+
+        # Confidence adjustment based on setup quality
+        adj = 0
+        if len(setup.confluence_factors) >= 5:
+            adj += 5
+        if len(setup.risk_factors) >= 2:
+            adj -= 5
+        if setup.rr_ratio >= 3.0:
+            adj += 5
 
         return AIReasoning(
-            explanation=(
-                f"{setup.setup_type.value.replace('_', ' ').title()} detected on {setup.symbol} "
-                f"({setup.timeframe}). Key confluence: {confluence_text}. "
-                f"R:R ratio of {setup.rr_ratio} with clear invalidation level."
-            ),
-            confidence_adjustment=0,
+            explanation=explanation,
+            confidence_adjustment=max(-20, min(20, adj)),
             risk_summary=risk_text,
-            market_context="AI reasoning unavailable — using deterministic analysis only.",
+            market_context=market_context,
         )

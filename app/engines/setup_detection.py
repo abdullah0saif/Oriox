@@ -46,7 +46,7 @@ class SetupDetectionEngine:
     """Scans TA + futures data and detects high-quality setups using deterministic rules."""
 
     MIN_RR = 2.0
-    MIN_CONFLUENCE = 2
+    MIN_CONFLUENCE = 3
 
     def detect_setups(
         self,
@@ -157,34 +157,51 @@ class SetupDetectionEngine:
 
         is_long = ta.trend.direction == "bullish"
 
-        # Price should be pulling back to EMA
+        # Price should be pulling back to EMA — strict proximity
         ema_distance_pct = abs(ta.current_price - ta.ema_20) / ta.ema_20 * 100
-        if ema_distance_pct > 3.0:
-            return None  # Too far from EMA — not a pullback
+        if ema_distance_pct > 1.5:
+            return None  # Too far from EMA — not a clean pullback
 
-        near_ema = ema_distance_pct < 1.5
+        # Require EMA alignment for trend continuation
+        if not ta.trend.ema_aligned:
+            return None
+
+        # Require trend strength above threshold
+        if ta.trend.strength < 0.3:
+            return None
 
         confluence: list[str] = []
         risks: list[str] = []
 
-        if ta.trend.ema_aligned:
-            confluence.append(
-                "EMA alignment confirmed (20 > 50 > 200)" if is_long else "Bearish EMA alignment"
-            )
+        confluence.append(
+            f"EMA alignment (20>{ta.ema_20:.2f} > 50>{ta.ema_50:.2f} > 200>{ta.ema_200:.2f})"
+            if is_long
+            else f"Bearish EMA alignment (20<{ta.ema_20:.2f} < 50<{ta.ema_50:.2f})"
+        )
 
-        if near_ema:
-            confluence.append(f"Price near 20 EMA ({ema_distance_pct:.1f}% away)")
+        confluence.append(
+            f"Price at {ta.current_price:.4f}, pulling back to 20 EMA ({ema_distance_pct:.2f}% away)"
+        )
 
-        if is_long and ta.rsi > 40 and ta.rsi < 65:
-            confluence.append(f"RSI in healthy pullback zone ({ta.rsi:.0f})")
-        elif not is_long and ta.rsi > 40 and ta.rsi < 60:
-            confluence.append(f"RSI supports bearish continuation ({ta.rsi:.0f})")
+        if is_long and ta.rsi > 40 and ta.rsi < 60:
+            confluence.append(f"RSI cooled to {ta.rsi:.1f} — healthy pullback zone")
+        elif not is_long and ta.rsi > 45 and ta.rsi < 60:
+            confluence.append(f"RSI at {ta.rsi:.1f} — supports bearish continuation")
+        else:
+            return None  # RSI not in ideal zone
 
-        if ta.trend.strength > 0.3:
-            confluence.append(f"Trend strength: {ta.trend.strength:.1%}")
+        if ta.trend.strength > 0.5:
+            confluence.append(f"Strong trend momentum ({ta.trend.strength:.1%})")
 
         if ta.breakout_retest:
-            confluence.append("Breakout retest in progress")
+            confluence.append("Breakout retest confirmed")
+
+        if ta.volume_sma_ratio < 0.8:
+            confluence.append(
+                f"Volume declining on pullback ({ta.volume_sma_ratio:.2f}x) — healthy"
+            )
+        elif ta.volume_sma_ratio > 1.5:
+            risks.append(f"Elevated volume ({ta.volume_sma_ratio:.1f}x) — possible reversal")
 
         if len(confluence) < self.MIN_CONFLUENCE:
             return None
@@ -230,11 +247,14 @@ class SetupDetectionEngine:
         )
 
     def _check_volume_expansion(self, ta: TAResult, exchange: str) -> SetupCandidate | None:
-        if ta.volume_sma_ratio < 2.0:
-            return None
+        if ta.volume_sma_ratio < 2.5:
+            return None  # Need strong volume spike, not just above average
 
         if ta.trend.direction != "bullish":
             return None
+
+        if not ta.trend.ema_aligned:
+            return None  # Only in confirmed uptrends
 
         confluence: list[str] = [
             f"Volume spike {ta.volume_sma_ratio:.1f}x above average",
@@ -454,19 +474,26 @@ class SetupDetectionEngine:
 
         # Price should have recently dipped below and come back
         sweep_distance = (ta.current_price - nearest_support.level) / ta.current_price
-        if sweep_distance > 0.03:
+        if sweep_distance > 0.02:
             return None  # Too far from the sweep level
 
+        # Require strong support (multiple touches)
+        if nearest_support.strength < 3:
+            return None
+
         confluence: list[str] = [
-            f"Price reclaimed support at {nearest_support.level:.4f}",
-            f"Support strength: {nearest_support.strength} touches",
+            f"Price swept below and reclaimed support at {nearest_support.level:.4f}",
+            f"Support tested {nearest_support.strength} times — strong level",
         ]
         risks: list[str] = []
 
         if ta.rsi_divergence == "bullish":
-            confluence.append("Bullish RSI divergence")
-        if ta.volume_sma_ratio > 1.3:
-            confluence.append(f"Volume confirmation ({ta.volume_sma_ratio:.1f}x)")
+            confluence.append(f"Bullish RSI divergence with RSI at {ta.rsi:.1f}")
+        else:
+            return None  # Liquidity sweep without divergence is weak
+
+        if ta.volume_sma_ratio > 1.5:
+            confluence.append(f"Volume surge on reclaim ({ta.volume_sma_ratio:.1f}x avg)")
 
         if len(confluence) < self.MIN_CONFLUENCE:
             return None
@@ -505,23 +532,35 @@ class SetupDetectionEngine:
         if ta.trend.direction != "bullish" or not ta.trend.ema_aligned:
             return None
 
-        # Price must be near 20 EMA (pullback)
+        # Price must be very close to 20 EMA (tight pullback)
         distance = abs(ta.current_price - ta.ema_20) / ta.ema_20
-        if distance > 0.01:
+        if distance > 0.005:
+            return None  # Must be within 0.5% of EMA for pullback entry
+
+        # Pullback entry requires volume declining AND RSI cooling
+        if ta.volume_sma_ratio >= 0.8:
+            return None  # Volume should be drying up on pullback
+        if ta.rsi <= 40 or ta.rsi >= 55:
+            return None  # RSI must be in narrow cool-off zone
+
+        # Need futures data for pullback entry to differentiate from trend continuation
+        if not futures:
             return None
 
         confluence: list[str] = [
-            "Bullish trend with EMA alignment",
-            f"Price pulling back to 20 EMA ({distance:.2%} away)",
+            f"Tight pullback to 20 EMA at {ta.ema_20:.4f} ({distance:.3%} away)",
+            f"Volume drying up ({ta.volume_sma_ratio:.2f}x avg) — sellers exhausted",
+            f"RSI cooled to {ta.rsi:.1f} — reset from overbought",
         ]
         risks: list[str] = []
 
-        if ta.rsi > 40 and ta.rsi < 60:
-            confluence.append(f"RSI cooled off ({ta.rsi:.0f})")
-        if ta.volume_sma_ratio < 0.8:
-            confluence.append("Volume declining on pullback (healthy)")
-        if futures and not futures.overcrowded_longs:
-            confluence.append("Funding not overcrowded")
+        if not futures.overcrowded_longs:
+            confluence.append(f"Funding healthy ({futures.funding_rate:.4%}) — not overcrowded")
+        else:
+            risks.append(f"Overcrowded longs detected — funding {futures.funding_rate:.4%}")
+
+        if futures.oi_change_pct > 5:
+            confluence.append(f"Growing OI (+{futures.oi_change_pct:.1f}%) — fresh interest")
 
         if len(confluence) < 3:
             return None

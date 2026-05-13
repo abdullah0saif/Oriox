@@ -132,6 +132,9 @@ class ScannerService:
                 )
                 all_setups.extend(futures_setups)
 
+        # 4b. Deduplicate: same symbol + same setup type across spot/futures — keep best market type
+        all_setups = self._deduplicate_setups(all_setups)
+
         # 5. AI reasoning for each setup
         setups_with_reasoning: list[tuple[SetupCandidate, AIReasoning]] = []
         for setup in all_setups:
@@ -143,6 +146,9 @@ class ScannerService:
 
         # 7. Filter by minimum confidence
         ranked = [r for r in ranked if r.confidence >= settings.min_setup_confidence]
+
+        # 7b. Diversity cap: max 2 signals per setup type to avoid monotony
+        ranked = self._apply_diversity_cap(ranked, max_per_type=2)
 
         # 8. Risk assessment
         risk_map: dict[str, RiskAssessment] = {}
@@ -181,3 +187,33 @@ class ScannerService:
             setups_found=len(all_setups),
             setups_approved=len(approved),
         )
+
+    @staticmethod
+    def _deduplicate_setups(setups: list[SetupCandidate]) -> list[SetupCandidate]:
+        """If the same symbol has the same setup type in both spot and futures, keep futures only."""
+        seen: dict[tuple[str, str], SetupCandidate] = {}
+        for s in setups:
+            key = (s.symbol, s.setup_type.value)
+            existing = seen.get(key)
+            if existing is None:
+                seen[key] = s
+            elif s.market_type == MarketType.FUTURES and existing.market_type == MarketType.SPOT:
+                seen[key] = s  # Prefer futures (more data: funding, OI)
+            elif len(s.confluence_factors) > len(existing.confluence_factors):
+                seen[key] = s  # Keep the one with more confluence
+        return list(seen.values())
+
+    @staticmethod
+    def _apply_diversity_cap(
+        ranked: list[RankedSignal], max_per_type: int = 2
+    ) -> list[RankedSignal]:
+        """Cap signals per setup type to ensure variety. Keep highest-scored."""
+        type_counts: dict[str, int] = {}
+        result: list[RankedSignal] = []
+        for signal in ranked:  # already sorted by score descending
+            st = signal.setup.setup_type.value
+            count = type_counts.get(st, 0)
+            if count < max_per_type:
+                result.append(signal)
+                type_counts[st] = count + 1
+        return result

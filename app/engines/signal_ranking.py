@@ -81,39 +81,49 @@ class SignalRankingEngine:
 
     @staticmethod
     def _score_quality(setup: SetupCandidate) -> float:
-        score = 40.0  # base
+        score = 30.0  # lower base to spread scores
 
-        # RR contribution
-        if setup.rr_ratio >= 3.0:
-            score += 25
+        # RR contribution — more granular
+        if setup.rr_ratio >= 4.0:
+            score += 30
+        elif setup.rr_ratio >= 3.0:
+            score += 22
         elif setup.rr_ratio >= 2.5:
-            score += 20
+            score += 15
         elif setup.rr_ratio >= 2.0:
-            score += 10
+            score += 8
 
-        # Clean structure (number of confluence vs risk factors)
+        # Clean structure — confluence vs risk factors
         confluence_ratio = len(setup.confluence_factors) / max(
             1, len(setup.risk_factors) + len(setup.confluence_factors)
         )
-        score += confluence_ratio * 20
+        score += confluence_ratio * 25
 
-        # Penalize too many risk factors
-        score -= len(setup.risk_factors) * 5
+        # Bonus for many confluence factors
+        if len(setup.confluence_factors) >= 5:
+            score += 10
+        elif len(setup.confluence_factors) >= 4:
+            score += 5
+
+        # Penalize risk factors more
+        score -= len(setup.risk_factors) * 8
 
         return max(0, min(100, score))
 
     @staticmethod
     def _score_confluence(setup: SetupCandidate) -> float:
         count = len(setup.confluence_factors)
-        if count >= 5:
+        if count >= 6:
             return 95
+        if count >= 5:
+            return 85
         if count >= 4:
-            return 80
+            return 72
         if count >= 3:
-            return 65
+            return 55
         if count >= 2:
-            return 45
-        return 20
+            return 35
+        return 15
 
     @staticmethod
     def _score_risk(setup: SetupCandidate) -> float:
@@ -171,14 +181,16 @@ class SignalRankingEngine:
 
     @staticmethod
     def _base_confidence(setup: SetupCandidate) -> int:
-        confidence = 50
+        base = 45  # lower base for more spread
 
-        confidence += len(setup.confluence_factors) * 7
-        confidence -= len(setup.risk_factors) * 5
+        base += min(25, len(setup.confluence_factors) * 6)
+        base -= min(25, len(setup.risk_factors) * 10)
 
-        if setup.rr_ratio >= 3.0:
-            confidence += 10
+        if setup.rr_ratio >= 4.0:
+            base += 12
+        elif setup.rr_ratio >= 3.0:
+            base += 8
         elif setup.rr_ratio >= 2.5:
-            confidence += 5
+            base += 4
 
-        return max(20, min(95, confidence))
+        return max(25, min(95, base))
